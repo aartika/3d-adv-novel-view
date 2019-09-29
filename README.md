@@ -1,1 +1,1 @@
-# Learning3D Priors with Adversarial Novel View Generation
+# Learning 3D Priors with Adversarial Novel View Generation
