@@ -1,3 +1,5 @@
+# Volume rotation and projection code borrowed from https://github.com/matheusgadelha/PrGAN.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,34 +20,6 @@ def cosine_similarity(x1, x2, dim=1, eps=1e-8):
     w1 = torch.norm(x1, 2, dim)
     w2 = torch.norm(x2, 2, dim)
     return (w12 / (w1 * w2).clamp(min=eps)).squeeze()
-
-
-def add_checkerboard(pts, size=10):
-    color1 = np.array([1, 1, 0])
-    color2 = np.array([0, 0, 1])
-
-    pts_pos = pts + pts.min(axis=0)
-    int_pts = (pts_pos/size).astype(int)
-    sum_pts = int_pts.sum(axis=1)
-
-    mod_pts = np.remainder(sum_pts, 2).astype(bool)
-
-    result = np.zeros((pts.shape[0], pts.shape[1]+3))
-    result[:, 0:3] = pts
-    result[mod_pts, 3:6] = color1
-    result[np.logical_not(mod_pts), 3:6] = color2
-
-    return result
-
-
-def nplerp(x0, xn, n):
-    interps = []
-    interps.append(x0)
-    for i in xrange(1, n):
-        alpha = i * 1.0/(n-1)
-        interps.append(x0 + alpha*(xn-x0))
-    interps = np.array(interps)
-    return interps
 
 
 def rotmat_2d(theta):
