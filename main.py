@@ -21,17 +21,17 @@ from math import sqrt
 
 from tqdm import tqdm
 import glob
-from ops import volume_proj, rotate_volume
-from dataset import *
+from dataset import ShapeNet
 from utils import write_obj_from_array
+from cnn import Encoder, Decoder, Generator2D, Generator3D, Discriminator
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gan', type=str, default='2d-3d_gan', help='gan type')
 parser.add_argument('--n_epochs', type=int, default=50, help='number of epochs of training')
 parser.add_argument('--batch_size', type=int, default=32, help='size of the batches')
-parser.add_argument('--g_lr', type=float, default=0.0001, help='adam: learning rate')
-parser.add_argument('--g_lr_2d', type=float, default=0.0002, help='adam: learning rate')
+parser.add_argument('--g_3d_lr', type=float, default=0.0001, help='adam: learning rate')
+parser.add_argument('--g_2d_lr', type=float, default=0.0002, help='adam: learning rate')
 parser.add_argument('--d_lr', type=float, default=0.0001, help='adam: learning rate')
 parser.add_argument('--enc_lr', type=float, default=0.0001, help='adam: learning rate')
 parser.add_argument('--b1', type=float, default=0.5, help='adam: decay of first order momentum of gradient')
@@ -50,7 +50,6 @@ parser.add_argument('--data_dir', type=str, default='data', help='data directory
 parser.add_argument('--output_dir', type=str, default='data', help='data directory')
 parser.add_argument('--lr_decay', type=float, default=0.5, help='leaky relu in generator')
 parser.add_argument('--tau', type=float, default=0.25, help='')
-parser.add_argument('--restore', type=bool, default=True, help='')
 parser.add_argument('--binarize', type=str, default='', help='')
 parser.add_argument('--save_voxels_after', type=int, default=150, help='')
 parser.add_argument('--validate_after', type=int, default=35, help='')
@@ -68,12 +67,13 @@ parser.add_argument('--train_2d', default=False, action='store_true', help='')
 parser.add_argument('--eval_only', default=False, action='store_true')
 parser.add_argument('--save_voxels', default=False, action='store_true')
 parser.add_argument('--loss_avg', default=False, action='store_true')
+parser.add_argument('--restore', default=False, action='store_true', help='')
 opt = parser.parse_args()
 
 tqdm.write(str(opt))
 
 opt_dict = vars(opt)
-opt_str = '{}/{}'.format(opt.class_choice, '_'.join("{}={}".format(key,opt_dict[key]) for key in ['gan', 'img_size', 'g_lr_2d', 'g_lr', 'd_lr', 'encoding_dim', 'noise_dim', 'g_optim', 'd_optim', 'tau', 'binarize', 'lambda_3d', 'base_filters', 'n_views', 'train_2d', 'neg_views']))
+opt_str = '{}/{}'.format(opt.class_choice, '_'.join("{}={}".format(key,opt_dict[key]) for key in ['gan', 'img_size', 'g_2d_lr', 'g_3d_lr', 'd_lr', 'encoding_dim', 'noise_dim', 'g_optim', 'd_optim', 'tau', 'binarize', 'lambda_3d', 'base_filters', 'n_views', 'train_2d', 'neg_views']))
 
 voxels_dir = os.path.join(opt.output_dir, 'voxels/{}'.format(opt_str))
 images_dir = os.path.join(opt.output_dir, 'images/{}'.format(opt_str))
@@ -95,333 +95,6 @@ def weights_init_normal(m):
     elif classname.find('BatchNorm') != -1:
         torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         torch.nn.init.constant_(m.bias.data, 0.0)
-
-class LayerNorm(nn.Module):
-    def __init__(self, num_features):
-        super(LayerNorm, self).__init__()
-        self.layer_norm = nn.LayerNorm(num_features)
-
-    def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
-        out = self.layer_norm(x)
-        out = out.permute(0, 3, 1, 2).contiguous()
-        return out 
-
-class Encoder(nn.Module):
-    def __init__(self):
-        super(Encoder, self).__init__()
-        self.d_size = 64
-
-        def discriminator_block(in_filters, out_filters, bn=True):
-            block = [   nn.Conv2d(in_filters, out_filters, 5, 2, 1),
-                        nn.ReLU()]
-            if bn:
-                block.append(nn.BatchNorm2d(out_filters, 0.8))
-            return block
-
-        self.model = nn.Sequential(
-            *discriminator_block(opt.channels, self.d_size, bn=False),
-            *discriminator_block(self.d_size, self.d_size*2),
-            *discriminator_block(self.d_size*2, self.d_size*4),
-            *discriminator_block(self.d_size*4, self.d_size*8),
-            *discriminator_block(self.d_size*8, self.d_size*16)
-        )
-
-        # The height and width of downsampled image
-        #ds_size = opt.img_size // 2**4
-        ds_size = 1
-        #self.adv_layer = nn.Sequential( nn.Linear(self.d_size*8*ds_size**2, 1),
-        #                                nn.Sigmoid())
-        self.adv_layer = nn.Sequential( nn.Linear(self.d_size*16*ds_size**2, opt.encoding_dim))
-
-    def forward(self, img):
-        out = self.model(img)
-        out = out.view(out.shape[0], -1)
-        out = self.adv_layer(out)
-
-        return out 
-
-def deconv2d_add3(in_filters, out_filters):
-    return torch.nn.ConvTranspose2d(in_filters, out_filters, kernel_size=4, stride=1, padding=0)
-
-def deconv2d_2x(in_filters, out_filters):
-    return torch.nn.ConvTranspose2d(in_filters, out_filters, kernel_size=4, stride=2, padding=1)
-
-class Decoder(nn.Module):
-    def __init__(self):
-        super(Decoder, self).__init__()
-
-        self.d_size = opt.base_filters 
-        self.init_size = opt.img_size // 8 
-        self.l1 = nn.Sequential(nn.Linear(opt.encoding_dim, self.d_size*self.init_size**2))
-
-        #self.conv_blocks = nn.Sequential(
-        #    nn.BatchNorm2d(self.d_size),
-        #    nn.Upsample(scale_factor=2),
-        #    nn.Conv2d(self.d_size, self.d_size // 2, 3, stride=1, padding=1),
-        #    nn.BatchNorm2d(self.d_size // 2, 0.8),
-        #    nn.ReLU(),
-        #    nn.Upsample(scale_factor=2),
-        #    nn.Conv2d(self.d_size // 2, self.d_size // 4, 3, stride=1, padding=1),
-        #    nn.BatchNorm2d(self.d_size // 4, 0.8),
-        #    nn.ReLU(),
-        #    nn.Upsample(scale_factor=2),
-        #    nn.Conv2d(self.d_size // 4, self.d_size // 8, 3, stride=1, padding=1),
-        #    nn.BatchNorm2d(self.d_size // 8, 0.8),
-        #    nn.ReLU(),
-        #    nn.Conv2d(self.d_size // 8, opt.channels, 3, stride=1, padding=1),
-        #    nn.Sigmoid()
-        #)
-
-        if opt.img_size == 32:
-            conv_layers = [
-                    deconv2d_2x(opt.encoding_dim, self.d_size)
-            ]
-        else: 
-            conv_layers = [
-                    deconv2d_add3(opt.encoding_dim, self.d_size)
-            ]
-        conv_layers += [
-            torch.nn.BatchNorm2d(self.d_size),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            deconv2d_2x(self.d_size, self.d_size // 2),
-            torch.nn.BatchNorm2d(self.d_size // 2),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            deconv2d_2x(self.d_size // 2, self.d_size // 4),
-            torch.nn.BatchNorm2d(self.d_size // 4),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            deconv2d_2x(self.d_size // 4, self.d_size // 8),
-            torch.nn.BatchNorm2d(self.d_size // 8),
-            nn.LeakyReLU(0.2, inplace=True),
-            ]
-
-        if opt.img_size == 128:
-            conv_layers += [
-                    deconv2d_2x(self.d_size // 8, self.d_size // 8),
-                    torch.nn.BatchNorm2d(self.d_size // 8),
-                    nn.LeakyReLU(0.2, inplace=True),
-            ]
-
-        conv_layers += [
-            deconv2d_2x(self.d_size // 8, opt.channels),
-            nn.Sigmoid()
-        ] 
-        self.conv_blocks = torch.nn.Sequential(*conv_layers)
- 
-    def forward(self, z):
-        #out = self.l1(z)
-        #out = out.view(out.shape[0], self.d_size, self.init_size, self.init_size)
-        z = z.unsqueeze(2).unsqueeze(3)
-        img = self.conv_blocks(z)
-        return img
-
-class Generator2D(nn.Module):
-    def __init__(self):
-        super(Generator2D, self).__init__()
-
-        self.d_size = opt.base_filters 
-        self.init_size = opt.img_size // 4  
-        self.l1 = nn.Sequential(nn.Linear(opt.encoding_dim+opt.noise_dim+9, self.d_size*self.init_size**2))
-
-        if opt.img_size == 32:
-            conv_layers = [
-                    deconv2d_2x(opt.encoding_dim+opt.noise_dim+9, self.d_size)
-            ]
-        else: 
-            conv_layers = [
-                    deconv2d_add3(opt.encoding_dim+opt.noise_dim+9, self.d_size)
-            ]
-        conv_layers += [
-            torch.nn.BatchNorm2d(self.d_size),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            deconv2d_2x(self.d_size, self.d_size // 2),
-            torch.nn.BatchNorm2d(self.d_size // 2),
-            nn.LeakyReLU(0.2, inplace=True),
-
-            deconv2d_2x(self.d_size // 2, self.d_size // 4),
-            torch.nn.BatchNorm2d(self.d_size // 4),
-            nn.LeakyReLU(0.2, inplace=True),
-                
-            deconv2d_2x(self.d_size // 4, self.d_size // 8),
-            torch.nn.BatchNorm2d(self.d_size // 8),
-            nn.LeakyReLU(0.2, inplace=True),
-            ]
-
-        if opt.img_size == 128:
-            conv_layers += [
-                    deconv2d_2x(self.d_size // 8, self.d_size // 8),
-                    torch.nn.BatchNorm2d(self.d_size // 8),
-                    nn.LeakyReLU(0.2, inplace=True),
-            ]
-
-        conv_layers += [
-            deconv2d_2x(self.d_size // 8, opt.channels),
-            nn.Sigmoid()
-        ] 
-        self.conv_blocks = torch.nn.Sequential(*conv_layers)
-        #self.conv_blocks = nn.Sequential(
-        #    nn.BatchNorm2d(128),
-        #    nn.Upsample(scale_factor=2),
-        #    nn.Conv2d(128, 128, 3, stride=1, padding=1),
-        #    nn.BatchNorm2d(128, 0.8),
-        #    nn.LeakyReLU(0.2, inplace=True),
-        #    nn.Upsample(scale_factor=2),
-        #    nn.Conv2d(128, 64, 3, stride=1, padding=1),
-        #    nn.BatchNorm2d(64, 0.8),
-        #    nn.LeakyReLU(0.2, inplace=True),
-        #    nn.Conv2d(64, opt.channels, 3, stride=1, padding=1),
-        #    nn.Tanh()
-        #)
-
-    def forward(self, z):
-        #out = self.l1(z)
-        #out = out.view(out.shape[0], self.d_size, self.init_size, self.init_size)
-        z = z.unsqueeze(2).unsqueeze(3)
-        img = self.conv_blocks(z)
-        return img
-
-
-def project_voxels(voxels, views=None, neg_views=None):
-    #vp = [0, np.pi/4.0, np.pi/2.0, 3*np.pi/4.0, np.pi, 5*np.pi/4.0, 3*np.pi/2.0, 7*np.pi/4.0, np.pi/2.0]
-    vp = [0, np.pi/4.0, np.pi/2.0, 3*np.pi/4.0, np.pi, 5*np.pi/4.0, 3*np.pi/2.0, 7*np.pi/4.0, 0]
-    hp = [0, 0, 0, 0, 0, 0, 0, 0, np.pi/2.0]
-    proj_imgs = []
-
-    if views is None:
-        views = []
-        for i in range(voxels.size()[0]):
-            population = range(0, 9)
-            if opt.neg_views and neg_views is not None:
-                population = [j for j in range(0, 9) if j not in [neg_view[i] for neg_view in neg_views]]
-            views.append(random.choice(population))
-
-    for i in range(voxels.size()[0]):
-        idx = views[i]
-        cube_shape = (opt.img_size, opt.img_size, opt.img_size)
-        proj_img = volume_proj(voxels[i].view(cube_shape), 
-            views=torch.tensor([[vp[idx], 0, hp[idx]]], dtype=torch.float), tau=opt.tau)
-        proj_imgs.append(proj_img.unsqueeze(0))
-
-    proj_imgs = torch.cat(proj_imgs, 0)
-    proj_imgs = proj_imgs.permute(0, 3, 1, 2)
-    return proj_imgs, views 
-
-
-class Generator3D(nn.Module):
-    def __init__(self, cube_len, latent_dim, lrelu=False, tau=0.5, spectralnorm=False):
-        super(Generator3D, self).__init__()
-
-        self.cube_len = cube_len
-        self.base_filters = 128 
-        self.tau = tau
-        self.spectralnorm = spectralnorm
-        if cube_len == 32:
-            self.init_len = 2 
-        else:
-            self.init_len = 4 
-
-        self.l1 = nn.Sequential(nn.Linear(latent_dim, self.init_len**3*self.base_filters))
-
-        if lrelu:
-            self.non_lin = torch.nn.LeakyReLU(0.1)
-        else:
-            self.non_lin = torch.nn.ReLU()
-
-        conv_layers = [self.conv3d_2x(self.base_filters, self.base_filters//2),
-                self.conv3d_2x(self.base_filters//2, self.base_filters//4),
-                self.conv3d_2x(self.base_filters//4, self.base_filters//8),
-                ]
-        
-        if cube_len == 128:
-            conv_layers.append(self.conv3d_2x(self.base_filters//8, self.base_filters//8))
-
-        padd = (1, 1, 1)
-        conv_layers += [
-                torch.nn.ConvTranspose3d(self.base_filters//8, 1, kernel_size=4, stride=2, bias=False, padding=padd),
-                torch.nn.Sigmoid()
-                ]
-        self.conv_blocks = torch.nn.Sequential(*conv_layers)
-
-    def forward(self, x):
-        #out = x.view(-1, latent_dim, 1, 1, 1)
-        out = self.l1(x)
-        #out = out.unsqueeze(2).unsqueeze(3).unsqueeze(4)
-        out = out.view(-1, self.base_filters, self.init_len, self.init_len, self.init_len)
-        out = self.conv_blocks(out)
-        return out
-
-    def conv3d_2x(self, in_filters, out_filters):
-        padd = (1, 1, 1)
-        convlayer = torch.nn.ConvTranspose3d(in_filters, out_filters, kernel_size=4, stride=2, bias=False, padding=padd)
-        if self.spectralnorm:
-            convlayer = nn.utils.spectral_norm(convlayer)
-        return torch.nn.Sequential(
-                convlayer,
-                torch.nn.BatchNorm3d(out_filters),
-                self.non_lin)
-
-#class Discriminator(nn.Module):
-#    def __init__(self):
-#        super(Discriminator, self).__init__()
-#
-#        def discriminator_block(in_filters, out_filters, bn=False):
-#            block = [   nn.utils.spectral_norm(nn.Conv2d(in_filters, out_filters, 3, 2, 1)),
-#                        nn.LeakyReLU(0.1, inplace=True)]
-#            if bn:
-#                block.append(nn.BatchNorm2d(out_filters, 0.8))
-#            return block
-#
-#        self.model = nn.Sequential(
-#            *discriminator_block(opt.channels+9, 16),
-#            *discriminator_block(16, 32),
-#            *discriminator_block(32, 64),
-#            *discriminator_block(64, 128),
-#        )
-#
-#        # The height and width of downsampled image
-#        ds_size = opt.img_size // 2**4
-#        self.adv_layer = nn.Sequential( nn.Linear(128*ds_size**2, 1))
-#
-#    def forward(self, img):
-#        out = self.model(img)
-#        out = out.view(out.shape[0], -1)
-#        validity = self.adv_layer(out)
-#
-#        return validity
-
-class Discriminator(nn.Module):
-    def __init__(self):
-        super(Discriminator, self).__init__()
-        self.d_size = 16 
-
-        def discriminator_block(in_filters, out_filters, ln=True):
-            block = [nn.Conv2d(in_filters, out_filters, 3, 2, 1)]
-            if ln:
-                block.append(LayerNorm(out_filters))
-            block.append(nn.LeakyReLU(0.1, inplace=True))
-            return block
-
-        self.model = nn.Sequential(
-            *discriminator_block(opt.channels+9, self.d_size, ln=False),
-            *discriminator_block(self.d_size, self.d_size*2),
-            *discriminator_block(self.d_size*2, self.d_size*4),
-            *discriminator_block(self.d_size*4, self.d_size*8),
-        )
-
-        # The height and width of downsampled image
-        ds_size = opt.img_size // 2**4
-        self.adv_layer = nn.Sequential( nn.Linear(self.d_size*8*ds_size**2, 1))
-
-    def forward(self, img):
-        out = self.model(img)
-        out = out.view(out.shape[0], -1)
-        validity = self.adv_layer(out)
-
-        return validity
 
 # Loss weight for gradient penalty
 lambda_gp = 10
@@ -502,15 +175,15 @@ params_3d = [*generator3d.parameters(), *encoder.parameters()]
 params_2d = [*generator2d.parameters(), *encoder2.parameters()]
 params_G = [*encoder.parameters()]
 if opt.g_optim == 'adam':
-    optimizer_enc = torch.optim.Adam(params_enc, lr=opt.g_lr, betas=(opt.b1, opt.b2))
-    optimizer_2d = torch.optim.Adam(params_2d, lr=opt.g_lr_2d, betas=(opt.b1, opt.b2))
-    optimizer_3d = torch.optim.Adam(params_3d, lr=opt.g_lr, betas=(opt.b1, opt.b2))
-    optimizer_G = torch.optim.Adam(params_G, lr=opt.g_lr, betas=(opt.b1, opt.b2))
+    optimizer_enc = torch.optim.Adam(params_enc, lr=opt.g_3d_lr, betas=(opt.b1, opt.b2))
+    optimizer_2d = torch.optim.Adam(params_2d, lr=opt.g_2d_lr, betas=(opt.b1, opt.b2))
+    optimizer_3d = torch.optim.Adam(params_3d, lr=opt.g_3d_lr, betas=(opt.b1, opt.b2))
+    optimizer_G = torch.optim.Adam(params_G, lr=opt.g_3d_lr, betas=(opt.b1, opt.b2))
 else:
-    optimizer_enc = torch.optim.RMSprop(params_enc, lr=opt.g_lr)
-    optimizer_2d = torch.optim.RMSprop(params_2d, lr=opt.g_lr_2d)
-    optimizer_3d = torch.optim.RMSprop(params_3d, lr=opt.g_lr)
-    optimizer_G = torch.optim.RMSprop(params_G, lr=opt.g_lr)
+    optimizer_enc = torch.optim.RMSprop(params_enc, lr=opt.g_3d_lr)
+    optimizer_2d = torch.optim.RMSprop(params_2d, lr=opt.g_2d_lr)
+    optimizer_3d = torch.optim.RMSprop(params_3d, lr=opt.g_3d_lr)
+    optimizer_G = torch.optim.RMSprop(params_G, lr=opt.g_3d_lr)
 
 if opt.d_optim == 'adam':
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.d_lr, betas=(opt.b1, opt.b2))

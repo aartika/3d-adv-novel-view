@@ -81,6 +81,33 @@ def volume_to_cubes(volume, threshold=0, dim=[2., 2., 2.]):
                     faces.append(np.array([vidx+6, vidx+7, vidx+3, vidx+2]))
     return points, faces
 
+def project_voxels(voxels, views=None, neg_views=None):
+    #vp = [0, np.pi/4.0, np.pi/2.0, 3*np.pi/4.0, np.pi, 5*np.pi/4.0, 3*np.pi/2.0, 7*np.pi/4.0, np.pi/2.0]
+    vp = [0, np.pi/4.0, np.pi/2.0, 3*np.pi/4.0, np.pi, 5*np.pi/4.0, 3*np.pi/2.0, 7*np.pi/4.0, 0]
+    hp = [0, 0, 0, 0, 0, 0, 0, 0, np.pi/2.0]
+    proj_imgs = []
+
+    if views is None:
+        views = []
+        for i in range(voxels.size()[0]):
+            population = range(0, 9)
+            if opt.neg_views and neg_views is not None:
+                population = [j for j in range(0, 9) if j not in [neg_view[i] for neg_view in neg_views]]
+            views.append(random.choice(population))
+
+    for i in range(voxels.size()[0]):
+        idx = views[i]
+        cube_shape = (opt.img_size, opt.img_size, opt.img_size)
+        proj_img = volume_proj(voxels[i].view(cube_shape), 
+            views=torch.tensor([[vp[idx], 0, hp[idx]]], dtype=torch.float), tau=opt.tau)
+        proj_imgs.append(proj_img.unsqueeze(0))
+
+    proj_imgs = torch.cat(proj_imgs, 0)
+    proj_imgs = proj_imgs.permute(0, 3, 1, 2)
+    return proj_imgs, views 
+
+
+
 def write_cubes_obj(path, points, faces):
     f = open(path, 'w')
     for p in points:
