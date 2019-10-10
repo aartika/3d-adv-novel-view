@@ -11,7 +11,7 @@ In our work, we exploit this well-tested principle for single image datasets by 
 <img src="https://github.com/aartika/prgan/blob/master/images/arch_new.png" alt="Architecture"
 	title="Architecture" width="2000" />
 
-Our approach summarized in Figure 1 jointly learns shape and novel view prediction systems, denoted as <img src="https://latex.codecogs.com/gif.latex?O_t=\text { Onset event at time bin } t " />  <i>f<sub>shape</sub></i> and <i>f<sub>novel</sub></i>, by enforcing geometric consistency between their predictions.  Concretely, given one image of an object we predict a corresponding shape. 
+Our approach summarized in Figure 1 jointly learns shape and novel view prediction systems, denoted as  <i>f<sub>shape</sub></i> and <i>f<sub>novel</sub></i>, by enforcing geometric consistency between their predictions.  Concretely, given one image of an object we predict a corresponding shape. 
 
 In parallel,  for  the  same  image,  we  independently  predict another image of the same object from a different viewpoint sampled randomly at runtime. We then enforce  that  the  predicted  shape,  when  observed  from this sampled viewpoint, should be <i>consistent</i> with the novel view image. 
 
