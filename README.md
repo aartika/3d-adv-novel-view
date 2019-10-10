@@ -23,6 +23,12 @@ As observed earlier, shapes produced by our 3D reconstructor can be arbitrarily 
 We use the ShapeNet<sup>1</sup>  dataset to empirically validate our approach. In particular, we evaluate on the five largest categories (Table 1).  As a baseline, we implement an encoder-decoder architecture wherein the 3D decoder is trained using consistency loss with the input image.  We train all models using binary silhouette images as input, and use negative cosine distance between images as the consistency metric. 
 
 Our  method  achieves  a  mean intersection-over-union (IoU) of 0.477 with ground truth 3D voxels, a significant improvement  over  the  baseline  at 0.390. Compared to our predicted shapes, baseline predictions appear severely distorted when observed from a neutral viewpoint.
+| Abcd Test1 |
+|------------|
+| Test 1     |
+| Test 3     |
+| Test 4     |
+| Test 5     |
 
 <img align="right" src="https://github.com/aartika/prgan/blob/master/images/qualitative_results.png" alt="Qualitative Results" title="Qualitative Results" width="500" />
 
