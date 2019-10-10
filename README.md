@@ -8,8 +8,7 @@ If multiple views are available, we can tackle this issue using multi-view consi
 In our work, we exploit this well-tested principle for single image datasets by explicitly generating novel views using adversarial training.
 
 ## Architecture
-<img src="https://github.com/aartika/prgan/blob/master/images/arch.png" alt="Architecture"
-	title="Architecture" width="2000" />
+<img src="images/arch.png" alt="Architecture"	title="Architecture" width="2000" />
 
 Our approach summarized in Figure 1 jointly learns shape and novel view prediction systems, denoted as  <i>f<sub>shape</sub></i> and <i>f<sub>novel</sub></i>, by enforcing geometric consistency between their predictions.  Concretely, given one image of an object we predict a corresponding shape. 
 
