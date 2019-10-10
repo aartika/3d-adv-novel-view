@@ -24,7 +24,7 @@ We use the ShapeNet<sup>1</sup>  dataset to empirically validate our approach. I
 
 Our  method  achieves  a  mean intersection-over-union (IoU) of 0.477 with ground truth 3D voxels, a significant improvement  over  the  baseline  at 0.390. Compared to our predicted shapes, baseline predictions appear severely distorted when observed from a neutral viewpoint.
 
-<img style="float: right;" src="https://github.com/aartika/prgan/blob/master/images/qualitative_results.png" alt="Qualitative Results" title="Qualitative Results" width="500" />
+<img align="right" src="https://github.com/aartika/prgan/blob/master/images/qualitative_results.png" alt="Qualitative Results" title="Qualitative Results" width="500" />
 
 | Abcd Test1 |
 |------------|
